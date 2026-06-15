@@ -1,0 +1,22 @@
+{
+  "name": "api-client",
+  "version": "1.0.0",
+  "description": "Type-safe API client with Zod validation",
+  "type": "module",
+  "main": "./dist/api/index.js",
+  "types": "./dist/api/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "mock": "tsx src/mock-server.ts",
+    "example": "tsx src/example.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}
