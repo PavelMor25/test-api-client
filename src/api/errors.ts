@@ -19,7 +19,7 @@ export class ApiValidationError extends Error {
   readonly zodError: ZodError;
 
   constructor(url: string, zodError: ZodError) {
-    super(`Response validation failed for ${url}`);
+    super(`Validation failed for ${url}`);
     this.name = "ApiValidationError";
     this.url = url;
     this.zodError = zodError;

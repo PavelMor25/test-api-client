@@ -1,4 +1,5 @@
 import type { ZodType } from "zod";
+import { ApiValidationError } from "./errors.js";
 
 export function serializeQueryParams(
   query: Record<string, unknown>,
@@ -29,7 +30,13 @@ export function serializeQueryParams(
 export function validateAndSerializeQuery<T extends ZodType>(
   query: unknown,
   querySchema: T,
+  context: string,
 ): string {
-  const validated = querySchema.parse(query);
-  return serializeQueryParams(validated as Record<string, unknown>);
+  const result = querySchema.safeParse(query);
+
+  if (!result.success) {
+    throw new ApiValidationError(context, result.error);
+  }
+
+  return serializeQueryParams(result.data as Record<string, unknown>);
 }

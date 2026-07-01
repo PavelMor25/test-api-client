@@ -1,3 +1,4 @@
+import { ApiValidationError } from "./errors.js";
 import {
   UserSearchFieldSchema,
   UsersQuerySchema,
@@ -54,12 +55,18 @@ export function filterUsers(users: User[], query: UsersQuery): User[] {
   return users.filter((user) => matchesSearch(user, query.search!, fields));
 }
 
-function parseFieldsParam(values: string[]): UserSearchField[] {
+function parseFieldsParam(values: string[], context: string): UserSearchField[] {
   const fields = values.flatMap((value) =>
     value.split(",").map((part) => part.trim()),
   );
 
-  return fields.map((field) => UserSearchFieldSchema.parse(field));
+  return fields.map((field) => {
+    const result = UserSearchFieldSchema.safeParse(field);
+    if (!result.success) {
+      throw new ApiValidationError(context, result.error);
+    }
+    return result.data;
+  });
 }
 
 export function parseUsersQueryFromUrl(url: string): UsersQuery {
@@ -73,8 +80,13 @@ export function parseUsersQueryFromUrl(url: string): UsersQuery {
 
   const fields = searchParams.getAll("fields");
   if (fields.length > 0) {
-    raw.fields = parseFieldsParam(fields);
+    raw.fields = parseFieldsParam(fields, url);
   }
 
-  return UsersQuerySchema.parse(raw);
+  const result = UsersQuerySchema.safeParse(raw);
+  if (!result.success) {
+    throw new ApiValidationError(url, result.error);
+  }
+
+  return result.data;
 }

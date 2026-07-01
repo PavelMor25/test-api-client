@@ -1,6 +1,7 @@
 import type { ZodType, z } from "zod";
 import { InMemoryCache } from "./cache.js";
 import { ApiHttpError, ApiValidationError } from "./errors.js";
+import { InflightRequests } from "./inflight.js";
 import { serializeQueryParams, validateAndSerializeQuery } from "./query.js";
 import { withRetry, type RetryOptions } from "./retry.js";
 
@@ -48,8 +49,20 @@ function joinUrl(baseURL: string, path: string, queryString: string): string {
   return `${normalizedBase}${normalizedPath}${queryString}`;
 }
 
-function buildCacheKey(method: string, url: string): string {
-  return `${method} ${url}`;
+function serializeHeaders(headers: Headers): string {
+  const entries: string[] = [];
+
+  headers.forEach((value, key) => {
+    entries.push(`${key.toLowerCase()}:${value}`);
+  });
+
+  entries.sort();
+  return entries.join("|");
+}
+
+function buildRequestKey(method: string, url: string, headers: Headers): string {
+  const headerKey = serializeHeaders(headers);
+  return headerKey ? `${method} ${url} ${headerKey}` : `${method} ${url}`;
 }
 
 export class ApiClient {
@@ -57,6 +70,7 @@ export class ApiClient {
   private readonly defaultHeaders: HeadersInit | undefined;
   private readonly retryOptions: Partial<RetryOptions>;
   private readonly cache = new InMemoryCache();
+  private readonly inflight = new InflightRequests();
 
   constructor(options: ApiClientOptions) {
     this.baseURL = options.baseURL;
@@ -67,18 +81,44 @@ export class ApiClient {
   async get<TResponse extends ZodType, TQuery extends ZodType | undefined = undefined>(
     options: GetRequestOptions<TResponse, TQuery>,
   ): Promise<z.infer<TResponse>> {
-    const queryString = this.buildQueryString(options.query, options.querySchema);
+    const baseUrl = joinUrl(this.baseURL, options.path, "");
+    const queryString = this.buildQueryString(
+      baseUrl,
+      options.query,
+      options.querySchema,
+    );
     const url = joinUrl(this.baseURL, options.path, queryString);
-    const cacheKey = buildCacheKey("GET", url);
+    const headers = mergeHeaders(this.defaultHeaders, options.headers);
+    const requestKey = buildRequestKey("GET", url, headers);
 
-    if (options.cache) {
-      const cached = this.cache.get<z.infer<TResponse>>(cacheKey);
-      if (cached !== undefined) {
-        return cached;
-      }
+    const cached = this.getFromCache<z.infer<TResponse>>(requestKey, options.cache);
+    if (cached !== undefined) {
+      return cached;
     }
 
-    const headers = mergeHeaders(this.defaultHeaders, options.headers);
+    return this.inflight.dedupe(requestKey, () =>
+      this.executeGet(url, requestKey, headers, options),
+    );
+  }
+
+  clearCache(): void {
+    this.cache.clear();
+  }
+
+  private async executeGet<
+    TResponse extends ZodType,
+    TQuery extends ZodType | undefined = undefined,
+  >(
+    url: string,
+    requestKey: string,
+    headers: Headers,
+    options: GetRequestOptions<TResponse, TQuery>,
+  ): Promise<z.infer<TResponse>> {
+    const cached = this.getFromCache<z.infer<TResponse>>(requestKey, options.cache);
+    if (cached !== undefined) {
+      return cached;
+    }
+
     const fetchInit: RequestInit = {
       method: "GET",
       headers,
@@ -102,17 +142,25 @@ export class ApiClient {
     }
 
     if (options.cache) {
-      this.cache.set(cacheKey, parsed.data, options.cache.ttl);
+      this.cache.set(requestKey, parsed.data, options.cache.ttl);
     }
 
     return parsed.data;
   }
 
-  clearCache(): void {
-    this.cache.clear();
+  private getFromCache<T>(
+    requestKey: string,
+    cacheOptions: GetRequestOptions<ZodType>["cache"],
+  ): T | undefined {
+    if (!cacheOptions) {
+      return undefined;
+    }
+
+    return this.cache.get<T>(requestKey);
   }
 
   private buildQueryString(
+    url: string,
     query: Record<string, unknown> | undefined,
     querySchema: ZodType | undefined,
   ): string {
@@ -121,7 +169,7 @@ export class ApiClient {
     }
 
     if (querySchema) {
-      return validateAndSerializeQuery(query, querySchema);
+      return validateAndSerializeQuery(query, querySchema, url);
     }
 
     return serializeQueryParams(query);
@@ -131,17 +179,7 @@ export class ApiClient {
     url: string,
     init: RequestInit,
   ): Promise<Response> {
-    let response: Response;
-
-    try {
-      response = await fetch(url, init);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        throw error;
-      }
-
-      throw error;
-    }
+    const response = await fetch(url, init);
 
     if (response.status >= 400) {
       const details = await this.tryParseJson(response);
